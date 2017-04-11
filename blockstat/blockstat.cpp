@@ -51,8 +51,21 @@ Powershell calling can be done:
 //max amount of files blockstat will compare
 #define MAXCOMPAREFILES 1024
 
+
+
 #include <iostream>
 
+//Don't have mem will use a uint8_t for referencing counting. This will slash memory usage in half
+//However, in this case a block can not be shared more then 255 time because it will overflow to 0 again and give false results
+//with uint16 64k shares are possible, which should not be reached so fast
+//#define DONTHAVEANYMEM
+
+
+#ifdef DONTHAVEANYMEM
+typedef uint8_t ShareMemCounterInt;
+#else
+typedef uint16_t ShareMemCounterInt;
+#endif
 
 
 //generic stacking function for strings
@@ -150,7 +163,8 @@ typedef struct _VCNLCNMAP {
 
 typedef struct _VINFO {
 	DWORD ClusterSize;
-	DWORD Clusters;
+	//DWORD Clusters;
+	ULONGLONG Clusters;
 	wchar_t Volume[SUPERMAXPATH];
 } VINFO;
 
@@ -256,10 +270,19 @@ bool GetVolInfo(wchar_t * pfname, VINFO * vinfo) {
 		DWORD TotalNumberOfClusters;
 
 		if (GetDiskFreeSpace(vinfo->Volume, &SectorsPerCluster, &BytesPerSector, &NumberOfFreeClusters, &TotalNumberOfClusters)) {
-			vinfo->Clusters = TotalNumberOfClusters;
+			//vinfo->Clusters = TotalNumberOfClusters;
 			vinfo->ClusterSize = SectorsPerCluster*BytesPerSector;
 
-			success = true;
+			//very big volumes don't like the 32 bit integer 
+			//16TB at 4KB cluster size maxes out TotalNumberOfClusters
+			
+			ULARGE_INTEGER TotalNumberOfBytes;
+			if (GetDiskFreeSpaceEx(vinfo->Volume, NULL, &TotalNumberOfBytes, NULL)) {
+				vinfo->Clusters = (TotalNumberOfBytes.QuadPart / vinfo->ClusterSize);
+
+				
+				success = true;
+			}
 		}
 	}
 	return success;
@@ -281,7 +304,7 @@ void resulterradd(SingleResult * singleresult, CompareResult * compareresult,LPC
 
 //the heart of the app
 
-bool vcnnums(HANDLE * psrchandle, VINFO* vinfo, int * refmap, LONGLONG refmapsz, bool singlefiledump, SingleResult * singleresult,CompareResult * compareresult) {
+bool vcnnums(HANDLE * psrchandle, VINFO* vinfo, ShareMemCounterInt * refmap, LONGLONG refmapsz, bool singlefiledump, SingleResult * singleresult,CompareResult * compareresult) {
 
 	//need to have  a file handle open to the file
 	HANDLE fhandle = *psrchandle;
@@ -391,14 +414,17 @@ bool vcnnums(HANDLE * psrchandle, VINFO* vinfo, int * refmap, LONGLONG refmapsz,
 					A filesystem will always try to make a  bigger extent so that the data can be accessed more sequentially
 				*/
 				LONGLONG lcnend = (lcn.QuadPart + extclusters);
+
 				if (lcnend <= refmapsz) {
 					for (LONGLONG cl = lcn.QuadPart; cl < lcnend; cl++) {
 						refmap[cl]++;
 					}
+
 				}
 				else {
-					wprintf(L"REFMAP NOT BIG ENOUGH (SHOULD NOT HAPPEN)");
-					
+					wprintf(L"REFMAP NOT BIG ENOUGH (SHOULD NOT HAPPEN)\n");
+					wprintf(L"LCN END (end of extent) was %lld vs size of map %lld\n", lcnend, refmapsz);
+					wprintf(L"CLUSTERS %lld CSIZE %ld\n",vinfo->Clusters,vinfo->ClusterSize);
 				}
 				//increment the fragments result so we can see how fragmented a file is
 				compareresult->fragments++;
@@ -439,7 +465,7 @@ Shows where the file is logically located on the file system
 //just prints out the info from the structs in human readable format
 void printsingle(Blockstatflags* bsf, SingleResult * psr) {
 	fwprintf(bsf->printer, L"Single Mode\n");
-	fwprintf(bsf->printer, L"Fsinfo %ls clustersize %ld clusters %ld\n", psr->gvinfo->Volume, psr->gvinfo->ClusterSize, psr->gvinfo->Clusters);
+	fwprintf(bsf->printer, L"Fsinfo %ls clustersize %lld clusters %lld\n", psr->gvinfo->Volume, psr->gvinfo->ClusterSize, psr->gvinfo->Clusters);
 	fwprintf(bsf->printer, L"File: %ls\n",psr->file);
 	for (int i = 0; i < psr->vcnstack->used; i++) {
 		VCNRes *vrs = psr->vcnstack->vs[i];
@@ -453,7 +479,7 @@ void printsingle(Blockstatflags* bsf, SingleResult * psr) {
 void xmlprintsingle(Blockstatflags* bsf, SingleResult * psr) {
 	fwprintf(bsf->printer, L"<result type='single'>\n");
 
-	fwprintf(bsf->printer, L" <fsinfo volume='%ls' clustersize='%ld' clusters='%ld'/>\n", psr->gvinfo->Volume, psr->gvinfo->ClusterSize, psr->gvinfo->Clusters);
+	fwprintf(bsf->printer, L" <fsinfo volume='%ls' clustersize='%lld' clusters='%lld'/>\n", psr->gvinfo->Volume, psr->gvinfo->ClusterSize, psr->gvinfo->Clusters);
 	fwprintf(bsf->printer, L" <files>\n");
 	fwprintf(bsf->printer, L"\t<file>%ls</file>\n", psr->file);
 	fwprintf(bsf->printer, L" </files>\n");
@@ -470,10 +496,10 @@ void xmlprintsingle(Blockstatflags* bsf, SingleResult * psr) {
 	fwprintf(bsf->printer, L" <vcns>\n");
 	for (int i = 0; i < psr->vcnstack->used; i++) {
 		VCNRes *vrs = psr->vcnstack->vs[i];
-		fwprintf(bsf->printer, L"\t\t<vcn start='%lld' lcn='%lld' sz='%lld' totalsz='%lld' />\n", vrs->startvcn, vrs->lcn, vrs->sizepart, vrs->totsize);
+		fwprintf(bsf->printer, L"\t<vcn start='%lld' lcn='%lld' sz='%lld' totalsz='%lld' />\n", vrs->startvcn, vrs->lcn, vrs->sizepart, vrs->totsize);
 	}
 	fwprintf(bsf->printer, L" </vcns>\n");
-	fwprintf(bsf->printer, L"<totalextents>%lld</totalextents>\n", psr->vcnstack->used);
+	fwprintf(bsf->printer, L" <totalextents>%lld</totalextents>\n", psr->vcnstack->used);
 
 	fwprintf(bsf->printer, L"</result>\n");
 }
@@ -548,16 +574,15 @@ int dumpfile(Blockstatflags* bsf,wchar_t* src) {
 	//cleanup some stuff
 	free(vinfo);
 
-	for (int i=0; i < sr.vcnstack->provisioned; i++) {
+	for (int i=0; i < sr.vcnstack->used; i++) {
 		free(sr.vcnstack->vs[i]);
 	}
 	free(sr.vcnstack->vs);
+
 	free(sr.vcnstack);
 
-	
 	free(sr.errors);
 	
-
 	return retvalue;
 }
 
@@ -573,7 +598,7 @@ COMPARING FUNCTIONS
 //just prints out the info from the structs in human readable format
 void printcompare(Blockstatflags* bsf,CompareResult * compareresult) {
 	fwprintf(bsf->printer,L"Comparing Mode\n");
-	fwprintf(bsf->printer, L"Fsinfo %ls clustersize %ld clusters %ld\n", compareresult->gvinfo->Volume, compareresult->gvinfo->ClusterSize, compareresult->gvinfo->Clusters);
+	fwprintf(bsf->printer, L"Fsinfo %ls clustersize %lld clusters %lld\n", compareresult->gvinfo->Volume, compareresult->gvinfo->ClusterSize, compareresult->gvinfo->Clusters);
 	fwprintf(bsf->printer, L"Files:\n");
 	for (int i = 0; i < compareresult->files->c; i++) {
 		fwprintf(bsf->printer, L"\t- %ls\n", compareresult->files->ss[i]);
@@ -606,7 +631,7 @@ void xmlprintcompare(Blockstatflags* bsf,CompareResult * compareresult) {
 	
 	fwprintf(bsf->printer,L"<result type='compare'>\n");
 	
-	fwprintf(bsf->printer, L" <fsinfo volume='%ls' clustersize='%ld' clusters='%ld'/>\n", compareresult->gvinfo->Volume, compareresult->gvinfo->ClusterSize, compareresult->gvinfo->Clusters);
+	fwprintf(bsf->printer, L" <fsinfo volume='%ls' clustersize='%lld' clusters='%lld'/>\n", compareresult->gvinfo->Volume, compareresult->gvinfo->ClusterSize, compareresult->gvinfo->Clusters);
 	fwprintf(bsf->printer, L" <files>\n");
 	for (int i=0; i < compareresult->files->c; i++) {
 		fwprintf(bsf->printer, L"\t<file>%ls</file>\n", compareresult->files->ss[i]);
@@ -717,8 +742,11 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 		//there is thus no link with the filesize itself
 		//everytime a cluster is found, the corresponding int is incremented with 1 does indicating how much the block is used
 
-		LONGLONG refmapsz = sizeof(int)*gvinfo->Clusters;
-		int* refmap = (int*)malloc(refmapsz);
+
+		LONGLONG refmapsz = sizeof(ShareMemCounterInt)*gvinfo->Clusters;
+		ShareMemCounterInt* refmap = (ShareMemCounterInt*)malloc(refmapsz);
+
+
 		
 		//zeroing the array
 		for (LONGLONG r = 0; r < gvinfo->Clusters; r++) {
@@ -866,6 +894,7 @@ int main(int argc, char* argv[])
 {
 	int retvalue = 0;
 
+	
 
 	//General options to pass through to all the functions
 	//xmlout -> should we output human readable vs xml
@@ -890,6 +919,32 @@ int main(int argc, char* argv[])
 		if (strlen(argv[i]) > 1 && argv[i][0] == '-') {
 			switch (argv[i][1]) {
 			//-x means we need to output xml
+			case 's':
+				printf("\nHidden option: sizeof refmap is %d\n",sizeof(ShareMemCounterInt));
+
+				if ((i + 1) < argc) {
+					wchar_t * filealloc = (wchar_t*)malloc(sizeof(wchar_t)*SUPERMAXPATH); filealloc[0] = 0;
+					size_t conv = { 0 };
+					//copy compare
+					mbstowcs_s(&conv, filealloc, SUPERMAXPATH, argv[i+1], strlen(argv[i+1]));
+
+					//if the file exists, add it to the file stack for comparissoon
+					if (PathFileExists(filealloc)) {
+						VINFO* vinfo = (VINFO*)malloc(sizeof(VINFO));
+						(vinfo->Volume)[0] = 0;
+						if (GetVolInfo(filealloc, vinfo)) {
+							wprintf(L"%lld * %lld\n", vinfo->Clusters, vinfo->ClusterSize);
+							wprintf(L"Volsize: %lld GB", ((vinfo->Clusters* vinfo->ClusterSize)/1024/1024/1024));
+						}
+						free(vinfo);
+					}
+					free(filealloc);
+
+					
+				}
+
+				return 2001;
+				break;
 			case 'x':
 				bsf->xmlout = true;
 				break;
@@ -1057,7 +1112,7 @@ int main(int argc, char* argv[])
 		retvalue = 1;
 		printf("Need at least 2 files to compare and 1 to dump");
 	}
-
+	
 	//cleanup the output file, 
 	CLEANUP:
 	if (bsf->printerisfile) {
