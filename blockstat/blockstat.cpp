@@ -257,6 +257,7 @@ typedef struct _Blockstatflags {
 	bool xmlout;
 	FILE* printer;
 	bool printerisfile;
+	bool verbose;
 } Blockstatflags;
 
 //generic function to get volume the volume info we need
@@ -304,7 +305,7 @@ void resulterradd(SingleResult * singleresult, CompareResult * compareresult,LPC
 
 //the heart of the app
 
-bool vcnnums(HANDLE * psrchandle, VINFO* vinfo, ShareMemCounterInt * refmap, LONGLONG refmapsz, bool singlefiledump, SingleResult * singleresult,CompareResult * compareresult) {
+bool vcnnums(HANDLE * psrchandle, VINFO* vinfo, ShareMemCounterInt * refmap, LONGLONG refmapsz, bool singlefiledump, SingleResult * singleresult,CompareResult * compareresult, Blockstatflags * bsf) {
 
 	//need to have  a file handle open to the file
 	HANDLE fhandle = *psrchandle;
@@ -366,10 +367,20 @@ bool vcnnums(HANDLE * psrchandle, VINFO* vinfo, ShareMemCounterInt * refmap, LON
 		if (s) { contstatus = 1; success = true; }
 		//if we have success = false, that doesn't mean there is a real issue. In most cases, it just means the data did not fit completely in the the buffer. Means we need to requery
 		//if however the error does not equal ERROR_MORE_DATA, something else went wrong, and we stop the process
-		else if (GetLastError() != ERROR_MORE_DATA) { 
-			contstatus = 2; 
-			//printLastError(L"Something went wrong with device io control");
-			resulterradd(singleresult, compareresult, L"Something went wrong with device io control");
+		else {
+			DWORD error = GetLastError();
+
+			if (error == ERROR_HANDLE_EOF) {
+				if (bsf->verbose) { wprintf(L"VERBOSE: is a small file?\n"); }
+				contstatus = 1;
+				success = true;
+			}
+			else if (error != ERROR_MORE_DATA) {
+				contstatus = 2;
+				//printLastError(L"Something went wrong with device io control");
+				resulterradd(singleresult, compareresult, L"Something went wrong with device io control");
+			}
+			
 		}
 		
 		//derefence for easy access (and shorter name)
@@ -537,7 +548,7 @@ int dumpfile(Blockstatflags* bsf,wchar_t* src) {
 
 				//if we can open the file, we can query the the cluster information
 				//vcnnums will update the singleresult so it can be used by the printing functions
-				if (!vcnnums(&srchandle, vinfo, NULL, 0, true,&sr,NULL)) {
+				if (!vcnnums(&srchandle, vinfo, NULL, 0, true,&sr,NULL,bsf)) {
 					retvalue = 4;
 					
 					addStringStackError(sr.errors, L"No success vcnnums");
@@ -685,7 +696,7 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 
 
 
-
+	if (bsf->verbose) { wprintf(L"VERBOSE: Checking if files are on the same volume\n"); }
 	
 
 	//make sure all files are on the same volume as first path
@@ -716,6 +727,8 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 					files[goodfiles] = src;
 					addStrStack(compareresult.files, src);
 					goodfiles++;
+
+					if (bsf->verbose) { wprintf(L"VERBOSE: File %ls is good\n",src); }
 				}
 				else {
 					//if file 2 and subsequent files are not on the same vol, we can not look for shared clusters because there is 0% chance of finding any
@@ -736,7 +749,7 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 
 	//if more then 1 goodfile (more then 1 file on the same vol), we can compare
 	if (goodfiles > 1) {
-		
+		if (bsf->verbose) { wprintf(L"VERBOSE: Got enough files, starting to compare\n"); }
 		//making a very inefficient int array. The size of the array equals the amount of clusters on the volume itself. 
 		//this make it so that the bigger the volume is, the more memory the program uses
 		//there is thus no link with the filesize itself
@@ -759,11 +772,13 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 			//open file in read (shared) mode
 			HANDLE srchandle = CreateFile(files[f], GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
 
+
 			//if we can open the file, all is good
 			if (srchandle != INVALID_HANDLE_VALUE) {
+				if (bsf->verbose) { wprintf(L"VERBOSE: Comparing %ls\n", files[f]); }
 
 				//call the vcn num function who updates the refmap with the amount of clusters
-				if (!vcnnums(&srchandle, gvinfo, refmap, refmapsz, false,NULL,&compareresult)) {
+				if (!vcnnums(&srchandle, gvinfo, refmap, refmapsz, false,NULL,&compareresult,bsf)) {
 					retvalue = 4;
 					
 					addStringStackError(compareresult.errors, L"No success vcnnums on file");
@@ -791,6 +806,8 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 			shared => [5] [1] [2]
 
 		*/
+
+		if (bsf->verbose) { wprintf(L"VERBOSE: Files compared, building up share array for final stats\n"); }
 		LONGLONG shared[MAXCOMPAREFILES];
 		for (int i = 0; i < MAXCOMPAREFILES; i++) {
 			shared[i] = 0;
@@ -820,7 +837,7 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 				}
 			}
 		}
-		
+		if (bsf->verbose) { wprintf(L"VERBOSE: Building up output, get ready to process\n"); }
 		//theoretically the share ratio map is enough to pass the info
 		//however, this does the precalculations so that the print function do not have to implement it individually (e.g sharelines)
 		LONGLONG savings = 0;
@@ -873,7 +890,7 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 	else {
 		printcompare(bsf, &compareresult);
 	}
-	
+	if (bsf->verbose) { wprintf(L"VERBOSE: Done"); }
 	free(files);
 	free(compareresult.files->ss);
 	
@@ -903,6 +920,7 @@ int main(int argc, char* argv[])
 	bsf->xmlout = false;
 	bsf->printer = stdout;
 	bsf->printerisfile = false;
+	bsf->verbose = false;
 	
 	
 	//Read from file defines an empty buffer to write to if the -i parameter is given (e.g a file that contains a filename per line)
@@ -978,13 +996,114 @@ int main(int argc, char* argv[])
 					i++;
 				}
 				break;
+			case 'm':
+				if ((i + 1) < argc) {
+					i++;
+
+					WIN32_FIND_DATA ffd;
+					HANDLE hFind = INVALID_HANDLE_VALUE;
+
+					wchar_t * filealloc = (wchar_t*)malloc(sizeof(wchar_t)*SUPERMAXPATH); filealloc[0] = L'\0';
+					size_t conv = { 0 };
+					//copy compare
+					mbstowcs_s(&conv, filealloc, SUPERMAXPATH, argv[i], strlen(argv[i]));
+
+					hFind = FindFirstFile(filealloc, &ffd);
+					if (INVALID_HANDLE_VALUE != hFind)
+					{
+						size_t ll = wcslen(filealloc) - 1;
+						while (ll > 0 && filealloc[ll] != L'\\') {
+							filealloc[ll--] = L'\0';
+						}
+
+						
+						do
+						{
+							if (!(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+							{
+								wchar_t *fpath = (wchar_t*)malloc(sizeof(wchar_t)*SUPERMAXPATH); fpath[0] = L'\0';
+								wcscat_s(fpath, SUPERMAXPATH, filealloc);
+								wcscat_s(fpath, SUPERMAXPATH, ffd.cFileName);
+
+								//wprintf(L"%ls\n",fpath);
+								if (PathFileExists(fpath)) {
+
+									files[filesc] = fpath;
+									filesc++;
+								}
+							}
+
+						} while (FindNextFile(hFind, &ffd) != 0);
+
+						FindClose(hFind);
+					}
+					else {
+						wprintf(L"DIE: UNABLE TO OPEN DIRECTORY\n");
+						return 1002;
+					}
+					free(filealloc);
+				}
+				//return 0;
+				break;
+			case 'd':
+				if ((i + 1) < argc) {
+					i++;
+
+					WIN32_FIND_DATA ffd;
+					HANDLE hFind = INVALID_HANDLE_VALUE;
+
+					wchar_t * filealloc = (wchar_t*)malloc(sizeof(wchar_t)*SUPERMAXPATH); filealloc[0] = L'\0';
+					size_t conv = { 0 };
+					//copy compare
+					mbstowcs_s(&conv, filealloc, SUPERMAXPATH, argv[i], strlen(argv[i]));
+					if (filealloc[wcslen(filealloc) - 1] == L'\\') {
+						wcscat_s(filealloc, SUPERMAXPATH, L"*");
+					}
+					else {
+						wcscat_s(filealloc, SUPERMAXPATH, L"\\*");
+					}
+					hFind = FindFirstFile(filealloc, &ffd);
+					if (INVALID_HANDLE_VALUE != hFind)
+					{
+						filealloc[wcslen(filealloc) - 1] = L'\0';
+						do
+						{
+							if (!(ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+							{
+								wchar_t *fpath = (wchar_t*)malloc(sizeof(wchar_t)*SUPERMAXPATH); fpath[0] = L'\0';
+								wcscat_s(fpath, SUPERMAXPATH, filealloc);
+								wcscat_s(fpath, SUPERMAXPATH, ffd.cFileName);
+
+								if (PathFileExists(fpath)) {
+									files[filesc] = fpath;
+									filesc++;
+								}
+							}
+							
+						} while (FindNextFile(hFind, &ffd) != 0);
+
+						FindClose(hFind);
+					}
+					else {
+						wprintf(L"DIE: UNABLE TO OPEN DIRECTORY\n");
+						return 1002;
+					}
+					free(filealloc);
+				}
+				
+				break;
 			//-h, we don't do anything
 			case 'h':
+				printf("-v be verbose during compare mode so you can track process\n");
 				printf("-x dump as xml\n");
 				printf("-i input file with file list in unicode (utf16 le)\n");
 				printf("-o output file (utf16le)\n");
-
+				printf("-d use directory supplied as input\n");
+				printf("-m mask e.g c:\\d\\file*.vbk\n");
 				goto CLEANUP;
+				break;
+			case 'v':
+				bsf->verbose = true;
 				break;
 			default:
 				printf("Unknown option -%c\n\n",argv[i][1]);
