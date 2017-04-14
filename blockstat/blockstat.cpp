@@ -905,7 +905,72 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 
 	return retvalue;
 }
+bool isdir(bool * isdir, wchar_t * dir) {
+	WIN32_FIND_DATA ffd;
+	HANDLE hFind = INVALID_HANDLE_VALUE;
+	bool ok = true;
+	(*isdir) = false;
 
+	int len = wcslen(dir);
+
+	hFind = FindFirstFile(dir, &ffd);
+	if (INVALID_HANDLE_VALUE != hFind) {
+		(*isdir) = (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY );
+		FindClose(hFind);
+	}
+	else if (len > 1 && len < 4 && dir[1] == L':' && PathFileExists(dir)) {
+			(*isdir) = true;
+	} 
+	else {
+		ok = false;
+	}
+	return ok;
+}
+
+void recursiveadddir(wchar_t* basedir, int* count, wchar_t** files) {
+	WIN32_FIND_DATA ffd;
+	HANDLE hFind = INVALID_HANDLE_VALUE;
+	wchar_t * qdir = (wchar_t*)(malloc(sizeof(wchar_t)*SUPERMAXPATH));
+
+	if ((*count) < MAXCOMPAREFILES && wcslen(basedir)+3 < SUPERMAXPATH) {
+		wcscat_s(basedir, SUPERMAXPATH, L"\\");
+		wcscpy_s(qdir, SUPERMAXPATH, basedir);
+		wcscat_s(qdir, SUPERMAXPATH,L"*");
+		hFind = FindFirstFile(qdir, &ffd);
+
+		
+		if (INVALID_HANDLE_VALUE != hFind)
+		{
+			do {
+				wchar_t * nextpath = (wchar_t*)(malloc(sizeof(wchar_t)*SUPERMAXPATH));
+				nextpath[0] = L'\0';
+				wcscpy_s(nextpath, SUPERMAXPATH, basedir);
+				wcscat_s(nextpath, SUPERMAXPATH, ffd.cFileName);
+
+				if (ffd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
+					if (!(wcscmp(ffd.cFileName, L".") == 0 || wcscmp(ffd.cFileName, L"..") == 0)) {
+						//wprintf(L"-%ls\n", nextpath);
+						recursiveadddir(nextpath, count, files);
+						free(nextpath);
+					}
+				}
+				else {
+					if (PathFileExists(nextpath)) {
+						files[(*count)] = nextpath;
+						(*count) = (*count) + 1;
+					}
+					//wprintf(L"%5ld %ls\n",(*count),nextpath);
+				}
+			} while ((*count) < MAXCOMPAREFILES && FindNextFile(hFind, &ffd) != 0);
+			FindClose(hFind);
+		}
+		//else { wprintf(L"invalid handle %ls\n",qdir); }
+	}
+	//else { wprintf(L"path too big\n"); }
+
+	free(qdir);
+	
+}
 
 int main(int argc, char* argv[])
 {
@@ -1042,6 +1107,28 @@ int main(int argc, char* argv[])
 						return 1002;
 					}
 					free(filealloc);
+				}
+				//return 0;
+				break;
+			case 't':
+				if ((i + 1) < argc) {
+					i++;
+					wchar_t * filealloc = (wchar_t*)malloc(sizeof(wchar_t)*SUPERMAXPATH); filealloc[0] = L'\0';
+					size_t conv = { 0 };
+					mbstowcs_s(&conv, filealloc, SUPERMAXPATH, argv[i], strlen(argv[i]));
+
+					
+					if (filealloc[wcslen(filealloc) - 1] == L'\\') {
+						filealloc[wcslen(filealloc) - 1] = L'\0';
+					}
+					bool isdirb = false;
+					if (isdir(&isdirb, filealloc) && isdirb) {
+						recursiveadddir(filealloc, &filesc, files);
+					}
+					else {
+						wprintf(L"DIE: UNABLE TO OPEN DIRECTORY OR IS NOT DIR\n");
+						return 1004;
+					}
 				}
 				//return 0;
 				break;
