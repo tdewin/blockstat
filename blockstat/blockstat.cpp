@@ -49,9 +49,13 @@ Powershell calling can be done:
 #define SUPERMAXPATH 4096
 #define ERRORWIDTH 4096
 //max amount of files blockstat will compare
-#define MAXCOMPAREFILES 1024
-
-
+//
+//#define SOMETHINGFISHY
+#ifdef SOMETHINGFISHY
+	#define MAXCOMPAREFILES 16384
+#else
+	#define MAXCOMPAREFILES 1024
+#endif
 
 #include <iostream>
 
@@ -833,7 +837,6 @@ int comparefiles(Blockstatflags* bsf,wchar_t* filesa[],int filesc) {
 				}
 				else {
 					addStrStack(compareresult.errors, L"More shared then files, seems impossible?");
-					
 				}
 			}
 		}
@@ -1003,7 +1006,8 @@ int main(int argc, char* argv[])
 			switch (argv[i][1]) {
 			//-x means we need to output xml
 			case 's':
-				printf("\nHidden option: sizeof refmap is %d\n",sizeof(ShareMemCounterInt));
+				printf("\nHidden option: sizeof refmap is %d",sizeof(ShareMemCounterInt));
+				printf("\nHidden option: sizeof maxcomparefiles is %d\n", MAXCOMPAREFILES);
 
 				if ((i + 1) < argc) {
 					wchar_t * filealloc = (wchar_t*)malloc(sizeof(wchar_t)*SUPERMAXPATH); filealloc[0] = 0;
@@ -1186,6 +1190,7 @@ int main(int argc, char* argv[])
 				printf("-i input file with file list in unicode (utf16 le)\n");
 				printf("-o output file (utf16le)\n");
 				printf("-d use directory supplied as input\n");
+				printf("-t use directory supplied as input recursive\n");
 				printf("-m mask e.g c:\\d\\file*.vbk\n");
 				goto CLEANUP;
 				break;
@@ -1195,9 +1200,13 @@ int main(int argc, char* argv[])
 			default:
 				printf("Unknown option -%c\n\n",argv[i][1]);
 
+				printf("-v be verbose during compare mode so you can track process\n");
 				printf("-x dump as xml\n");
 				printf("-i input file with file list in unicode (utf16 le)\n");
 				printf("-o output file (utf16le)\n");
+				printf("-d use directory supplied as input\n");
+				printf("-t use directory supplied as input recursive\n");
+				printf("-m mask e.g c:\\d\\file*.vbk\n");
 				goto CLEANUP;
 				break;
 			}
